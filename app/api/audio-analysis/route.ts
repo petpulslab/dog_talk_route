@@ -20,15 +20,35 @@ export async function POST(request: Request) {
     if (!file) {
       return NextResponse.json(
         { error: "No audio_file provided" },
-        { status: 400 }
+        {
+          status: 400,
+          headers: {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+          },
+        }
       );
     }
     if (!userToken) {
       return NextResponse.json(
         { error: "No user_token provided" },
-        { status: 400 }
+        {
+          status: 400,
+          headers: {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+          },
+        }
       );
     }
+
+    // 파일 타입과 크기 확인
+    console.log("[Audio Analysis API - POST] File details:", {
+      fileName: file.name,
+      fileType: file.type,
+      fileSize: file.size,
+      lastModified: new Date(file.lastModified).toISOString(),
+    });
 
     // 외부 API에 전달할 FormData 생성
     const apiFormData = new FormData();
@@ -59,47 +79,97 @@ export async function POST(request: Request) {
     });
 
     if (!uploadResponse.ok) {
+      // 응답 텍스트를 얻어 디버깅에 활용
       const errorText = await uploadResponse.text();
       console.error("[Audio Analysis API - POST] Upload Failed:", {
         status: uploadResponse.status,
         statusText: uploadResponse.statusText,
-        errorText: errorText,
+        errorText: errorText.substring(0, 1000), // 로그 크기 제한
       });
+
       return NextResponse.json(
-        { error: "Failed to request audio analysis", details: errorText },
-        { status: uploadResponse.status }
+        {
+          success: false,
+          error: "Failed to request audio analysis",
+          details: errorText.substring(0, 500),
+          status: uploadResponse.status,
+        },
+        {
+          status: uploadResponse.status,
+          headers: {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+          },
+        }
       );
     }
 
-    // 외부 API의 성공 응답 처리 (예: JSON)
-    // Pippo API는 성공 시 분석 요청 ID 등을 반환할 수 있습니다.
-    // 여기서는 단순화를 위해 userToken과 파일명을 기반으로 jobId를 생성하지만,
-    // 실제로는 외부 API가 제공하는 ID를 사용하거나, DB에 매핑 정보를 저장하는 것이 좋습니다.
-    const uploadResultData = await uploadResponse.json().catch(async () => {
-      // 만약 json 파싱 실패 시 텍스트로 한번 더 시도 (디버깅용)
-      const textResponse = await uploadResponse.text();
-      console.warn(
-        "[Audio Analysis API - POST] Upload response was not JSON, raw text:",
-        textResponse
-      );
-      return { rawResponse: textResponse }; // 또는 에러 처리
-    });
+    // 응답 텍스트를 먼저 얻어 디버깅
+    const responseText = await uploadResponse.text();
     console.log(
-      "[Audio Analysis API - POST] Upload Success Response from external API:",
-      uploadResultData
+      "[Audio Analysis API - POST] Upload Raw Response:",
+      responseText.substring(0, 1000)
     );
 
-    // jobId로 파일명과 타임스탬프를 조합하여 사용 (간단한 예시)
-    // 실제 프로덕션에서는 더 강력한 고유 ID 생성 방식 또는 외부 API 응답의 ID를 사용해야 합니다.
-    const jobId = `${userToken}_${file.name}_${Date.now()}`;
+    let uploadResultData;
+    try {
+      // 텍스트를 JSON으로 파싱
+      uploadResultData = JSON.parse(responseText);
+    } catch (parseError) {
+      console.warn(
+        "[Audio Analysis API - POST] Upload response was not valid JSON:",
+        parseError,
+        "Raw text:",
+        responseText.substring(0, 500)
+      );
+
+      // 파싱 실패 시 에러 응답
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Failed to parse API response",
+          details: String(parseError),
+          rawResponse: responseText.substring(0, 500),
+        },
+        {
+          status: 500,
+          headers: {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+          },
+        }
+      );
+    }
+
+    console.log(
+      "[Audio Analysis API - POST] Upload Success Response from external API:",
+      JSON.stringify(uploadResultData)
+    );
+
+    // API 응답에서 jobId를 추출
+    // 실제 API 응답 구조에 맞게 조정 필요
+    let jobId = "";
+
+    // 외부 API가 응답으로 ID를 제공하는 경우
+    if (uploadResultData && uploadResultData.data && uploadResultData.data.id) {
+      jobId = uploadResultData.data.id;
+    } else if (uploadResultData && uploadResultData.id) {
+      jobId = uploadResultData.id;
+    } else {
+      // API가 ID를 제공하지 않는 경우, 클라이언트 측에서 관리할 고유 ID 생성
+      jobId = `${userToken}_${file.name}_${Date.now()}`;
+    }
+
+    console.log("[Audio Analysis API - POST] Generated Job ID:", jobId);
 
     return NextResponse.json(
       {
         success: true,
         message: "Audio analysis requested. Poll for results using the jobId.",
         jobId: jobId, // 이 jobId를 클라이언트가 결과 조회 시 사용
-        // 만약 외부 API가 응답으로 file_id 같은 것을 준다면 그것을 jobId로 사용하는 것이 더 좋습니다.
-        // 예를 들어, uploadResultData?.data?.file_id
+        fileName: file.name,
+        fileSize: file.size,
+        apiResponse: uploadResultData, // 디버깅을 위해 API 응답 포함
       },
       {
         headers: {
@@ -112,6 +182,7 @@ export async function POST(request: Request) {
     console.error("[Audio Analysis API - POST] Error:", error);
     return NextResponse.json(
       {
+        success: false,
         error: "Internal server error during analysis request.",
         details: error instanceof Error ? error.message : "Unknown error",
       },
@@ -208,11 +279,11 @@ export async function GET(request: Request) {
       if (!resultResponse.ok) {
         // 결과가 아직 준비되지 않았거나 (예: 404 Not Found 또는 특정 에러 코드),
         // 실제 에러인 경우를 구분해야 할 수 있습니다.
-        // Pippo API 문서에 따르면 S0005 코드가 "분석 결과 없음"을 의미할 수 있습니다.
         const errorText = await resultResponse.text();
         console.warn(
           `[Audio Analysis API - GET] Result API error for jobId ${jobId}: ${resultResponse.status} - ${errorText}`
         );
+
         // 클라이언트가 폴링을 계속해야 하는지, 아니면 에러로 중단해야 하는지 알려줄 수 있는 상태 반환
         if (resultResponse.status === 404) {
           // 혹은 Pippo API의 "결과 없음" 코드 확인
@@ -249,13 +320,48 @@ export async function GET(request: Request) {
         );
       }
 
-      const data = await resultResponse.json();
+      // 응답 내용을 텍스트로 먼저 얻어서 디버깅에 활용
+      const responseText = await resultResponse.text();
+      console.log(
+        `[Audio Analysis API - GET] Raw response text for jobId ${jobId}:`,
+        responseText
+      );
+
+      // 텍스트를 JSON으로 파싱
+      let data;
+      try {
+        data = JSON.parse(responseText);
+      } catch (parseError) {
+        console.error(
+          `[Audio Analysis API - GET] JSON parse error for jobId ${jobId}:`,
+          parseError,
+          "Raw text:",
+          responseText
+        );
+        return NextResponse.json(
+          {
+            success: false,
+            error: "Failed to parse API response as JSON",
+            details: String(parseError),
+            rawText: responseText.substring(0, 500), // 길이 제한
+            jobId: jobId,
+          },
+          {
+            status: 500,
+            headers: {
+              "Access-Control-Allow-Origin": origin,
+              "Access-Control-Allow-Credentials": "true",
+            },
+          }
+        );
+      }
+
       console.log(
         `[Audio Analysis API - GET] Result API Success Response for jobId ${jobId}:`,
         JSON.stringify(data, null, 2)
       );
 
-      // Pippo API 응답에서 실제 결과 데이터 경로 확인 필요 (예: data.data.content[0])
+      // 응답 구조 검증 (실제 응답 구조에 맞게 조정)
       if (
         data &&
         data.data &&
@@ -263,9 +369,11 @@ export async function GET(request: Request) {
         data.data.content.length > 0
       ) {
         const latestResult = data.data.content[0];
-        // jobId와 요청된 jobId(또는 파일명)가 일치하는지 확인하는 로직 추가 가능
-        // 예를 들어, latestResult.fileNameOrigin과 jobId에 포함된 파일명을 비교
-        // 여기서는 최신 결과를 그냥 반환합니다.
+
+        console.log(
+          `[Audio Analysis API - GET] Extracted result for jobId ${jobId}:`,
+          latestResult
+        );
 
         const filteredResponse = {
           ansDog: latestResult.ansDog || "",
@@ -289,38 +397,65 @@ export async function GET(request: Request) {
             },
           }
         );
-      } else if (data && data.code === "S0005") {
-        // Pippo API의 "분석 결과 없음" 코드
+      } else if (data && data.code) {
+        // API 응답 코드를 기준으로 상태 확인
         console.log(
-          `[Audio Analysis API - GET] Analysis pending (S0005) for jobId ${jobId}, userToken ${userToken}. Client should retry.`
+          `[Audio Analysis API - GET] API returned code ${data.code} for jobId ${jobId}`
         );
+
+        // API 응답 코드에 따른 처리 (실제 API 문서 참조 필요)
+        if (
+          data.code === "S0005" ||
+          data.code === "200" ||
+          data.code === "404"
+        ) {
+          return NextResponse.json(
+            {
+              success: true,
+              status: "PROCESSING",
+              message: `Analysis is in progress (Code: ${data.code}). Please try again later.`,
+              jobId: jobId,
+              apiResponse: data, // 디버깅을 위해 API 응답 추가
+            },
+            {
+              headers: {
+                "Access-Control-Allow-Origin": origin,
+                "Access-Control-Allow-Credentials": "true",
+              },
+            }
+          );
+        } else {
+          // 기타 API 코드
+          return NextResponse.json(
+            {
+              success: false,
+              status: "ERROR",
+              message: `API returned unexpected code: ${data.code}`,
+              jobId: jobId,
+              apiResponse: data,
+            },
+            {
+              headers: {
+                "Access-Control-Allow-Origin": origin,
+                "Access-Control-Allow-Credentials": "true",
+              },
+            }
+          );
+        }
+      } else {
+        // 기타 응답 구조 처리
+        console.log(
+          `[Audio Analysis API - GET] Unexpected response structure for jobId ${jobId}:`,
+          data
+        );
+
         return NextResponse.json(
           {
             success: true,
-            status: "PROCESSING",
-            message:
-              "Analysis is still in progress (S0005). Please try again later.",
-            jobId: jobId,
-          },
-          {
-            headers: {
-              "Access-Control-Allow-Origin": origin,
-              "Access-Control-Allow-Credentials": "true",
-            },
-          }
-        );
-      } else {
-        console.log(
-          `[Audio Analysis API - GET] No content or unexpected data structure for jobId ${jobId}:`,
-          data
-        );
-        return NextResponse.json(
-          {
-            success: true, // 요청은 성공했으나
-            status: "NO_CONTENT", // 유효한 컨텐츠가 없음
+            status: "NO_CONTENT",
             message: "Analysis result not found or in an unexpected format.",
             jobId: jobId,
-            rawData: data, // 디버깅을 위해 원본 데이터 포함 가능
+            apiResponse: data, // 디버깅을 위해 API 응답 추가
           },
           {
             headers: {
@@ -382,6 +517,22 @@ export async function GET(request: Request) {
     console.error(
       `[Audio Analysis API - GET] Error for jobId (from query):`,
       error
+    );
+
+    // 일반적인 에러 응답
+    return NextResponse.json(
+      {
+        success: false,
+        error: "Internal server error during result retrieval",
+        details: error instanceof Error ? error.message : String(error),
+      },
+      {
+        status: 500,
+        headers: {
+          "Access-Control-Allow-Origin": origin || "*",
+          "Access-Control-Allow-Credentials": "true",
+        },
+      }
     );
   }
 }

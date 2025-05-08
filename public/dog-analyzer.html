@@ -352,7 +352,12 @@
 
               // API 요청
               this.uploadAndAnalyze(this.selectedFile, token)
-                .then(function (jobId) {
+                .then(function (response) {
+                  if (!response.success) {
+                    throw new Error(response.error || "API 요청 실패");
+                  }
+
+                  var jobId = response.jobId;
                   self.showStatus(
                     "요청 성공! Job ID: " +
                       jobId.substring(0, 10) +
@@ -400,29 +405,36 @@
 
                 var xhr = new XMLHttpRequest();
                 xhr.open("POST", self.API_BASE_URL, true);
-                xhr.timeout = 15000; // 15초 타임아웃
-                xhr.withCredentials = true;
+                xhr.timeout = 30000; // 30초 타임아웃으로 증가
 
+                // withCredentials를 false로 설정
+                xhr.withCredentials = false;
+
+                // 응답 처리
                 xhr.onload = function () {
                   if (xhr.status >= 200 && xhr.status < 300) {
                     try {
                       var response = JSON.parse(xhr.responseText);
                       self.logDebug(
                         "API 응답 받음: " +
-                          JSON.stringify(response).substring(0, 100)
+                          JSON.stringify(response).substring(0, 200)
                       );
 
-                      if (!response.success || !response.jobId) {
+                      if (!response.success) {
                         reject(
                           new Error(
-                            response.message ||
+                            response.error ||
+                              response.message ||
                               "서버에서 작업을 시작하지 못했습니다."
                           )
                         );
                       } else {
-                        resolve(response.jobId);
+                        resolve(response);
                       }
                     } catch (parseError) {
+                      self.logDebug(
+                        "응답 파싱 실패: " + xhr.responseText.substring(0, 200)
+                      );
                       reject(
                         new Error(
                           "서버 응답을 파싱할 수 없습니다: " +
@@ -431,11 +443,21 @@
                       );
                     }
                   } else {
-                    reject(new Error("HTTP 오류: " + xhr.status));
+                    var errorMsg = "HTTP 오류: " + xhr.status;
+                    try {
+                      var errorResponse = JSON.parse(xhr.responseText);
+                      if (errorResponse.error) {
+                        errorMsg += " - " + errorResponse.error;
+                      }
+                    } catch (e) {
+                      // 무시하고 기본 에러 메시지 사용
+                    }
+                    reject(new Error(errorMsg));
                   }
                 };
 
-                xhr.onerror = function () {
+                xhr.onerror = function (e) {
+                  self.logDebug("네트워크 오류: " + JSON.stringify(e));
                   reject(new Error("네트워크 오류가 발생했습니다."));
                 };
 
@@ -521,7 +543,9 @@
                 var xhr = new XMLHttpRequest();
                 xhr.open("GET", pollUrl, true);
                 xhr.timeout = 10000; // 10초 타임아웃
-                xhr.withCredentials = true;
+
+                // withCredentials를 false로 설정
+                xhr.withCredentials = false;
 
                 xhr.onload = function () {
                   if (xhr.status >= 200 && xhr.status < 300) {
@@ -531,7 +555,7 @@
                         "폴링 응답 받음 " +
                           pollAttempt +
                           "번째: " +
-                          JSON.stringify(response).substring(0, 100)
+                          JSON.stringify(response).substring(0, 200)
                       );
 
                       if (response.success && response.status === "COMPLETED") {
@@ -576,7 +600,10 @@
                             (remainingTime > 60
                               ? Math.ceil(remainingTime / 60) + "분"
                               : remainingTime + "초") +
-                            ")",
+                            ") - 시도: " +
+                            pollAttempt +
+                            "/" +
+                            maxRetries,
                           true
                         );
                         setTimeout(poll, interval);
@@ -591,6 +618,22 @@
                         );
                         resolve(response);
                         return;
+                      } else if (!response.success) {
+                        // 에러 응답인 경우
+                        self.hideStatus();
+                        self.showResult(
+                          "오류 발생: " +
+                            (response.error ||
+                              response.message ||
+                              "알 수 없는 오류"),
+                          false
+                        );
+                        reject(
+                          new Error(
+                            response.error || response.message || "API 오류"
+                          )
+                        );
+                        return;
                       } else {
                         self.showStatus(
                           "결과 확인 중... (" +
@@ -604,6 +647,9 @@
                         setTimeout(poll, interval);
                       }
                     } catch (parseError) {
+                      self.logDebug(
+                        "응답 파싱 실패: " + xhr.responseText.substring(0, 200)
+                      );
                       self.showStatus(
                         "응답 파싱 오류 (" +
                           pollAttempt +
@@ -616,20 +662,31 @@
                       setTimeout(poll, interval);
                     }
                   } else {
+                    var errorMsg = "HTTP 오류: " + xhr.status;
+                    try {
+                      var errorResponse = JSON.parse(xhr.responseText);
+                      if (errorResponse.error) {
+                        errorMsg += " - " + errorResponse.error;
+                      }
+                    } catch (e) {
+                      // 무시하고 기본 에러 메시지 사용
+                    }
+
                     self.showStatus(
-                      "HTTP 오류 (" +
+                      "API 요청 오류 (" +
                         pollAttempt +
                         "/" +
                         maxRetries +
                         "): " +
-                        xhr.status,
+                        errorMsg,
                       true
                     );
                     setTimeout(poll, interval);
                   }
                 };
 
-                xhr.onerror = function () {
+                xhr.onerror = function (e) {
+                  self.logDebug("네트워크 오류: " + JSON.stringify(e));
                   self.showStatus(
                     "네트워크 오류 발생 (" +
                       pollAttempt +
