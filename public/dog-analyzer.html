@@ -2,7 +2,6 @@
 <html>
   <head>
     <title>강아지 음성 감정 분석</title>
-    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
     <style>
       /* 간단한 스타일링 예시 */
       .audio-analyzer-container {
@@ -80,19 +79,24 @@
     </style>
   </head>
   <body>
-    <div class="audio-analyzer-container">
+    <div class="audio-analyzer-container" id="dog-analyzer">
       <h3>강아지 음성 감정 분석</h3>
 
       <div>
-        <label for="audioFile">음성 파일 선택 (MP3, WAV 등):</label>
-        <input type="file" id="audioFile" name="audioFile" accept="audio/*" />
+        <label for="dogAudioFile">음성 파일 선택 (MP3, WAV 등):</label>
+        <input
+          type="file"
+          id="dogAudioFile"
+          name="audioFile"
+          accept="audio/*"
+        />
       </div>
 
       <div>
-        <label for="userToken">사용자 토큰 입력:</label>
+        <label for="dogUserToken">사용자 토큰 입력:</label>
         <input
           type="text"
-          id="userToken"
+          id="dogUserToken"
           name="userToken"
           value="imweb_test_dog_1"
           placeholder="예: my_dog_token_123"
@@ -100,360 +104,550 @@
         <small>각 사용자를 구분하기 위한 값입니다.</small>
       </div>
 
-      <button id="uploadButton">업로드 및 분석 시작</button>
+      <button id="dogUploadButton">업로드 및 분석 시작</button>
 
       <div id="analyzer-status" style="display: none">상태 메시지...</div>
       <div id="analyzer-result" style="display: none">결과 표시 영역</div>
+      <div
+        id="debug-info"
+        style="margin-top: 15px; font-size: 12px; color: #666"
+      ></div>
+      <div
+        id="file-status"
+        style="margin-top: 10px; font-size: 12px; color: blue"
+      ></div>
     </div>
 
     <script>
-      // API 엔드포인트
-      const API_BASE_URL = "/api/audio-analysis";
+      (function () {
+        // 전역 변수를 피하기 위해 즉시 실행 함수 사용
+        var _dogAnalyzer = {
+          selectedFile: null,
+          API_BASE_URL: "https://dog-talk-route.pages.dev/api/audio-analysis",
+          MAX_FILE_SIZE: 10 * 1024 * 1024, // 10MB
+          SUPPORTED_AUDIO_TYPES: [
+            "audio/mpeg",
+            "audio/wav",
+            "audio/mp3",
+            "audio/x-m4a",
+            "audio/mp4",
+            "audio/aac",
+            "audio/ogg",
+            "audio/webm",
+            "audio/x-wav",
+            "audio/wave",
+          ],
+          SUPPORTED_AUDIO_EXTENSIONS: [".mp3", ".wav", ".m4a", ".aac", ".ogg"],
 
-      // 상수 정의
-      const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
-      const SUPPORTED_AUDIO_TYPES = [
-        "audio/mpeg",
-        "audio/wav",
-        "audio/mp3",
-        "audio/x-m4a",
-        "audio/mp4",
-        "audio/aac",
-        "audio/ogg",
-        "audio/webm",
-        "audio/x-wav",
-        "audio/wave",
-      ];
+          // 요소 참조
+          elems: {
+            container: document.getElementById("dog-analyzer"),
+            uploadButton: document.getElementById("dogUploadButton"),
+            audioFileInput: document.getElementById("dogAudioFile"),
+            userTokenInput: document.getElementById("dogUserToken"),
+            statusDiv: document.getElementById("analyzer-status"),
+            resultDiv: document.getElementById("analyzer-result"),
+            debugInfo: document.getElementById("debug-info"),
+            fileStatus: document.getElementById("file-status"),
+          },
 
-      const SUPPORTED_AUDIO_EXTENSIONS = [
-        ".mp3",
-        ".wav",
-        ".m4a",
-        ".aac",
-        ".ogg",
-      ];
+          // 초기화 함수
+          init: function () {
+            this.logDebug("강아지 분석기 초기화 중...");
 
-      // jQuery 사용 (아임웹에 이미 로드되어 있음)
-      $(document).ready(function () {
-        const $uploadButton = $("#uploadButton");
-        const $audioFile = $("#audioFile");
-        const $userToken = $("#userToken");
-        const $statusDiv = $("#analyzer-status");
-        const $resultDiv = $("#analyzer-result");
-
-        let selectedFile = null;
-
-        // 파일 유효성 검사 함수
-        function validateFile(file) {
-          console.log("파일 검증 시작:", file);
-
-          if (!file) {
-            throw new Error("파일이 선택되지 않았습니다.");
-          }
-
-          console.log("파일 타입:", file.type);
-
-          // 파일 확장자 확인
-          const fileName = file.name.toLowerCase();
-          const fileExtension = fileName.substring(fileName.lastIndexOf("."));
-          console.log("파일 확장자:", fileExtension);
-
-          // MIME 타입 또는 확장자로 검사
-          const isValidType =
-            SUPPORTED_AUDIO_TYPES.includes(file.type) ||
-            SUPPORTED_AUDIO_EXTENSIONS.some((ext) => fileName.endsWith(ext));
-
-          if (!isValidType) {
-            throw new Error(
-              `지원되지 않는 파일 형식입니다. 지원되는 형식: MP3, WAV, M4A, AAC, OGG`
-            );
-          }
-
-          if (file.size > MAX_FILE_SIZE) {
-            throw new Error(
-              `파일 크기가 너무 큽니다. 최대 ${
-                MAX_FILE_SIZE / (1024 * 1024)
-              }MB까지 업로드 가능합니다.`
-            );
-          }
-
-          console.log("파일 검증 성공");
-          return true;
-        }
-
-        // 파일 선택 이벤트 핸들러
-        $audioFile.on("change", function (event) {
-          try {
-            console.log("파일 선택 이벤트 발생", event.target.files);
-
-            // 파일이 선택되지 않았다면 초기화
-            if (!event.target.files || event.target.files.length === 0) {
-              console.log("파일이 선택되지 않음");
-              selectedFile = null;
-              hideStatus();
-              return;
+            // 이벤트 리스너 등록
+            if (this.elems.audioFileInput) {
+              this.elems.audioFileInput.addEventListener(
+                "change",
+                this.handleFileSelect.bind(this)
+              );
+              this.logDebug("파일 선택 이벤트 등록됨");
             }
 
-            const file = event.target.files[0];
-            console.log("선택된 파일:", file);
+            if (this.elems.uploadButton) {
+              this.elems.uploadButton.addEventListener(
+                "click",
+                this.handleUpload.bind(this)
+              );
+              this.logDebug("업로드 버튼 이벤트 등록됨");
+            }
 
-            if (file) {
-              // 파일 크기와 확장자 먼저 확인 - 브라우저에서 MIME 타입을 올바르게 보고하지 않을 수 있음
-              if (file.size > MAX_FILE_SIZE) {
-                throw new Error(
-                  `파일 크기가 너무 큽니다. 최대 ${
-                    MAX_FILE_SIZE / (1024 * 1024)
-                  }MB까지 업로드 가능합니다.`
-                );
+            this.logDebug("강아지 분석기 초기화 완료. 파일을 선택해주세요.");
+          },
+
+          // 디버그 로깅 함수
+          logDebug: function (message) {
+            console.log("[강아지 분석기]", message);
+            if (this.elems.debugInfo) {
+              this.elems.debugInfo.innerHTML = message;
+              this.elems.debugInfo.style.display = "block";
+            }
+          },
+
+          // 파일 상태 표시 함수
+          showFileStatus: function (message, isError) {
+            if (this.elems.fileStatus) {
+              this.elems.fileStatus.innerHTML = message;
+              this.elems.fileStatus.style.color = isError ? "red" : "blue";
+              this.elems.fileStatus.style.display = "block";
+            }
+          },
+
+          // 상태 표시 함수
+          showStatus: function (message, isLoading) {
+            if (this.elems.statusDiv) {
+              this.elems.statusDiv.textContent = message;
+              this.elems.statusDiv.innerHTML = message;
+
+              if (isLoading) {
+                var loader = document.createElement("div");
+                loader.className = "loader";
+                this.elems.statusDiv.appendChild(loader);
               }
 
-              const fileName = file.name.toLowerCase();
-              const fileExtension = fileName.substring(
-                fileName.lastIndexOf(".")
+              this.elems.statusDiv.style.display = "block";
+            }
+          },
+
+          hideStatus: function () {
+            if (this.elems.statusDiv) {
+              this.elems.statusDiv.style.display = "none";
+              this.elems.statusDiv.textContent = "";
+              this.elems.statusDiv.innerHTML = "";
+            }
+          },
+
+          showResult: function (message, isSuccess) {
+            if (this.elems.resultDiv) {
+              this.elems.resultDiv.textContent = message;
+              this.elems.resultDiv.className = isSuccess ? "success" : "error";
+              this.elems.resultDiv.style.display = "block";
+            }
+          },
+
+          hideResult: function () {
+            if (this.elems.resultDiv) {
+              this.elems.resultDiv.style.display = "none";
+              this.elems.resultDiv.textContent = "";
+            }
+          },
+
+          // 파일 선택 이벤트 핸들러
+          handleFileSelect: function (event) {
+            try {
+              this.logDebug("파일 선택 이벤트 발생");
+
+              // 파일이 선택되지 않았다면 초기화
+              if (!event.target.files || event.target.files.length === 0) {
+                this.logDebug("파일이 선택되지 않음");
+                this.selectedFile = null;
+                this.showFileStatus("파일이 선택되지 않았습니다.", true);
+                this.hideStatus();
+                return;
+              }
+
+              var file = event.target.files[0];
+              this.logDebug(
+                "선택된 파일: " + file.name + ", 크기: " + file.size + " bytes"
               );
 
-              // 확장자로 확인
-              if (
-                !SUPPORTED_AUDIO_EXTENSIONS.some((ext) =>
-                  fileName.endsWith(ext)
-                )
-              ) {
-                throw new Error(
-                  `지원되지 않는 파일 형식입니다. 지원되는 형식: MP3, WAV, M4A, AAC, OGG`
-                );
+              // 파일 유효성 검사
+              if (file.size > this.MAX_FILE_SIZE) {
+                var errorMsg =
+                  "파일 크기가 너무 큽니다. 최대 " +
+                  this.MAX_FILE_SIZE / (1024 * 1024) +
+                  "MB까지 업로드 가능합니다.";
+                this.showFileStatus(errorMsg, true);
+                throw new Error(errorMsg);
+              }
+
+              var fileName = file.name.toLowerCase();
+              var fileExtension = fileName.substring(fileName.lastIndexOf("."));
+
+              // 확장자 확인
+              var isValidExtension = false;
+              for (var i = 0; i < this.SUPPORTED_AUDIO_EXTENSIONS.length; i++) {
+                if (fileName.endsWith(this.SUPPORTED_AUDIO_EXTENSIONS[i])) {
+                  isValidExtension = true;
+                  break;
+                }
+              }
+
+              if (!isValidExtension) {
+                var extErrorMsg =
+                  "지원되지 않는 파일 형식입니다. 지원되는 형식: MP3, WAV, M4A, AAC, OGG";
+                this.showFileStatus(extErrorMsg, true);
+                throw new Error(extErrorMsg);
               }
 
               // 파일 유효성 검사 통과
-              selectedFile = file;
-              showStatus(
-                `선택된 파일: ${file.name} (${(
-                  file.size /
-                  (1024 * 1024)
-                ).toFixed(2)}MB)`,
+              this.selectedFile = file;
+              var successMsg =
+                "파일이 성공적으로 선택되었습니다: " +
+                file.name +
+                " (" +
+                (file.size / (1024 * 1024)).toFixed(2) +
+                "MB)";
+              this.showFileStatus(successMsg);
+              this.logDebug(
+                "파일 선택 성공. selectedFile 설정됨: " + file.name
+              );
+
+              // 상태 메시지 표시
+              this.showStatus(
+                "선택된 파일: " +
+                  file.name +
+                  " (" +
+                  (file.size / (1024 * 1024)).toFixed(2) +
+                  "MB)",
                 false
               );
-              hideResult();
-            } else {
-              selectedFile = null;
-              hideStatus();
+              this.hideResult();
+            } catch (error) {
+              console.error("파일 선택 오류:", error);
+              this.selectedFile = null;
+              this.showResult(error.message, false);
+              this.logDebug("파일 선택 오류: " + error.message);
+              event.target.value = ""; // 파일 선택 초기화
             }
-          } catch (error) {
-            console.error("파일 선택 오류:", error);
-            selectedFile = null;
-            showResult(error.message, false);
-            event.target.value = ""; // 파일 선택 초기화
-          }
-        });
+          },
 
-        // 토큰 유효성 검사
-        function validateToken(token) {
-          if (!token || token.trim().length === 0) {
-            throw new Error("사용자 토큰을 입력해주세요.");
-          }
-          return true;
-        }
+          // 업로드 버튼 클릭 이벤트 핸들러
+          handleUpload: function () {
+            var self = this;
 
-        // API 요청 함수
-        async function uploadAndAnalyze(file, token) {
-          const formData = new FormData();
-          formData.append("audio_file", file);
-          formData.append("user_token", token);
-
-          const response = await $.ajax({
-            url: API_BASE_URL,
-            method: "POST",
-            data: formData,
-            processData: false,
-            contentType: false,
-            dataType: "json",
-            timeout: 15000,
-          });
-
-          if (!response.success || !response.jobId) {
-            throw new Error(
-              response.message || "서버에서 작업을 시작하지 못했습니다."
-            );
-          }
-
-          return response.jobId;
-        }
-
-        // 업로드 버튼 클릭 이벤트 핸들러
-        $uploadButton.on("click", async function () {
-          try {
-            console.log("업로드 버튼 클릭, 선택된 파일:", selectedFile);
-
-            // 파일이 선택되지 않았으면 즉시 에러 표시
-            if (!selectedFile) {
-              throw new Error(
-                "파일이 선택되지 않았습니다. 오디오 파일을 먼저 선택해주세요."
+            try {
+              this.logDebug(
+                "업로드 버튼 클릭됨. selectedFile: " +
+                  (this.selectedFile ? this.selectedFile.name : "null")
               );
+
+              // 파일이 선택되지 않았으면 에러
+              if (!this.selectedFile) {
+                this.showFileStatus(
+                  "파일이 선택되지 않았습니다. 오디오 파일을 먼저 선택해주세요.",
+                  true
+                );
+                throw new Error(
+                  "파일이 선택되지 않았습니다. 오디오 파일을 먼저 선택해주세요."
+                );
+              }
+
+              var token = this.elems.userTokenInput
+                ? this.elems.userTokenInput.value.trim()
+                : "";
+
+              // 토큰 검증
+              if (!token || token.trim().length === 0) {
+                throw new Error("사용자 토큰을 입력해주세요.");
+              }
+
+              // UI 상태 업데이트
+              this.hideResult();
+              this.showStatus("파일 업로드 및 분석 요청 중...", true);
+
+              if (this.elems.uploadButton) {
+                this.elems.uploadButton.disabled = true;
+              }
+
+              // API 요청
+              this.uploadAndAnalyze(this.selectedFile, token)
+                .then(function (jobId) {
+                  self.showStatus(
+                    "요청 성공! Job ID: " +
+                      jobId.substring(0, 10) +
+                      "... 분석 결과 확인을 시작합니다.",
+                    true
+                  );
+
+                  // 폴링 시작
+                  return self.pollForResult(jobId, token);
+                })
+                .catch(function (error) {
+                  console.error("오류 발생:", error);
+                  self.hideStatus();
+                  self.showResult("오류 발생: " + error.message, false);
+                  self.logDebug("처리 오류: " + error.message);
+                })
+                .finally(function () {
+                  if (self.elems.uploadButton) {
+                    self.elems.uploadButton.disabled = false;
+                  }
+                });
+            } catch (error) {
+              console.error("업로드 오류:", error);
+              this.hideStatus();
+              this.showResult("오류 발생: " + error.message, false);
+              this.logDebug("업로드 오류: " + error.message);
+
+              if (this.elems.uploadButton) {
+                this.elems.uploadButton.disabled = false;
+              }
             }
+          },
 
-            const token = $userToken.val().trim();
+          // API 요청 함수
+          uploadAndAnalyze: function (file, token) {
+            var self = this;
 
-            // 토큰 검증
-            validateToken(token);
+            return new Promise(function (resolve, reject) {
+              try {
+                self.logDebug("API 요청 시작: " + self.API_BASE_URL);
 
-            // UI 상태 업데이트
-            hideResult();
-            showStatus("파일 업로드 및 분석 요청 중...", true);
-            $uploadButton.prop("disabled", true);
+                var formData = new FormData();
+                formData.append("audio_file", file);
+                formData.append("user_token", token);
 
-            // API 요청
-            const jobId = await uploadAndAnalyze(selectedFile, token);
+                var xhr = new XMLHttpRequest();
+                xhr.open("POST", self.API_BASE_URL, true);
+                xhr.timeout = 15000; // 15초 타임아웃
+                xhr.withCredentials = true;
 
-            showStatus(
-              `요청 성공! Job ID: ${jobId.substring(
-                0,
-                10
-              )}... 분석 결과 확인을 시작합니다.`,
+                xhr.onload = function () {
+                  if (xhr.status >= 200 && xhr.status < 300) {
+                    try {
+                      var response = JSON.parse(xhr.responseText);
+                      self.logDebug(
+                        "API 응답 받음: " +
+                          JSON.stringify(response).substring(0, 100)
+                      );
+
+                      if (!response.success || !response.jobId) {
+                        reject(
+                          new Error(
+                            response.message ||
+                              "서버에서 작업을 시작하지 못했습니다."
+                          )
+                        );
+                      } else {
+                        resolve(response.jobId);
+                      }
+                    } catch (parseError) {
+                      reject(
+                        new Error(
+                          "서버 응답을 파싱할 수 없습니다: " +
+                            parseError.message
+                        )
+                      );
+                    }
+                  } else {
+                    reject(new Error("HTTP 오류: " + xhr.status));
+                  }
+                };
+
+                xhr.onerror = function () {
+                  reject(new Error("네트워크 오류가 발생했습니다."));
+                };
+
+                xhr.ontimeout = function () {
+                  reject(new Error("요청 시간이 초과되었습니다."));
+                };
+
+                xhr.send(formData);
+              } catch (error) {
+                self.logDebug("API 요청 오류: " + error.message);
+                reject(error);
+              }
+            });
+          },
+
+          // 감정 텍스트 변환 함수
+          getEmotionText: function (ansDogCode) {
+            var emotionMap = {
+              dog_1: "에너자이저 🐶⚡",
+              dog_2: "요구 중 🙋",
+              dog_3: "화남 😡",
+              dog_4: "방어적 🛡️",
+              dog_5: "주목! 👀",
+              dog_6: "외로움 🥺",
+              dog_7: "수다쟁이 🗣️",
+              dog_8: "아픔 🤕",
+            };
+            return (
+              emotionMap[ansDogCode] || ansDogCode || "알 수 없는 감정 코드"
+            );
+          },
+
+          // 결과 폴링 함수
+          pollForResult: function (jobId, userToken, maxRetries, interval) {
+            var self = this;
+            maxRetries = maxRetries || 30;
+            interval = interval || 2500;
+
+            self.showStatus(
+              "분석 결과 확인 중... (Job ID: " +
+                jobId.substring(0, 10) +
+                "...)",
               true
             );
 
-            // 폴링 시작
-            await pollForResult(jobId, token);
-          } catch (error) {
-            console.error("오류 발생:", error);
-            hideStatus();
-            showResult(`오류 발생: ${error.message}`, false);
-          } finally {
-            $uploadButton.prop("disabled", false);
-          }
-        });
+            var pollUrl =
+              self.API_BASE_URL +
+              "?jobId=" +
+              encodeURIComponent(jobId) +
+              "&userToken=" +
+              encodeURIComponent(userToken);
+            self.logDebug("폴링 시작, URL: " + pollUrl);
 
-        function showStatus(message, isLoading = false) {
-          $statusDiv.text(message);
-          if (isLoading) {
-            $statusDiv.append(' <div class="loader"></div>');
-          }
-          $statusDiv.show();
-        }
+            return new Promise(function (resolve, reject) {
+              var pollAttempt = 0;
 
-        function hideStatus() {
-          $statusDiv.hide().empty();
-        }
-
-        function showResult(message, isSuccess = true) {
-          $resultDiv.text(message);
-          $resultDiv
-            .removeClass("success error")
-            .addClass(isSuccess ? "success" : "error");
-          $resultDiv.show();
-        }
-
-        function hideResult() {
-          $resultDiv.hide().empty();
-        }
-
-        function getEmotionText(ansDogCode) {
-          const emotionMap = {
-            dog_1: "에너자이저 \uD83D\uDC36⚡", // 🐶⚡
-            dog_2: "요구 중 \uD83D\uDE4B", // 🙋
-            dog_3: "화남 \uD83D\uDE21", // 😡
-            dog_4: "방어적 \uD83D\uDEE1️", // 🛡️
-            dog_5: "주목! \uD83D\uDC40", // 👀
-            dog_6: "외로움 \uD83E\uDD7A", // 🥺
-            dog_7: "수다쟁이 \uD83D\uDDE3️", // 🗣️
-            dog_8: "아픔 \uD83E\uDD15", // 🤕
-          };
-          return emotionMap[ansDogCode] || ansDogCode || "알 수 없는 감정 코드";
-        }
-
-        async function pollForResult(
-          jobId,
-          userToken,
-          maxRetries = 30,
-          interval = 2500
-        ) {
-          // 폴링 횟수 및 간격 증가
-          showStatus(
-            `분석 결과 확인 중... (Job ID: ${jobId.substring(0, 10)}...)`,
-            true
-          );
-          const pollUrl = `${API_BASE_URL}?jobId=${encodeURIComponent(
-            jobId
-          )}&userToken=${encodeURIComponent(userToken)}`;
-
-          for (let i = 0; i < maxRetries; i++) {
-            try {
-              const response = await $.ajax({
-                // jQuery AJAX 사용
-                url: pollUrl,
-                method: "GET",
-                dataType: "json", // 서버가 JSON을 반환한다고 가정
-                timeout: 10000, // 10초 타임아웃
-              });
-
-              // 성공적으로 응답을 받았으나, 내용 확인 필요
-              if (response.success && response.status === "COMPLETED") {
-                hideStatus();
-                const result = response.result;
-                let resultMessage = `분석 완료!\n파일명: ${
-                  result.fileNameOrigin || "N/A"
-                }\n`;
-                if (result.ansFilter === "noise") {
-                  resultMessage +=
-                    "결과: 주변 소음이 감지되었습니다. 다른 파일을 시도해 보세요.";
-                } else if (result.ansDog) {
-                  resultMessage += `감정: ${getEmotionText(result.ansDog)}`;
-                } else {
-                  resultMessage += "결과: 감정을 특정할 수 없습니다.";
+              function poll() {
+                if (pollAttempt >= maxRetries) {
+                  self.hideStatus();
+                  self.showResult(
+                    "분석 결과를 가져오는데 실패했습니다. (시도 횟수 초과: " +
+                      maxRetries +
+                      "회)",
+                    false
+                  );
+                  reject(new Error("최대 시도 횟수 초과"));
+                  return;
                 }
-                showResult(resultMessage, true);
-                return; // 폴링 종료
-              } else if (response.success && response.status === "PROCESSING") {
-                showStatus(
-                  `분석 진행 중... (${i + 1}/${maxRetries}) 다음 확인까지 ${
-                    interval / 1000
-                  }초`,
-                  true
-                );
-              } else if (response.success && response.status === "NO_CONTENT") {
-                hideStatus();
-                showResult(
-                  `분석 결과를 찾을 수 없습니다. (Job ID: ${jobId})`,
-                  false
-                );
-                return;
-              } else {
-                // success: false 또는 예상치 못한 status
-                showStatus(
-                  `결과 확인 중 응답 오류 (${i + 1}/${maxRetries}): ${
-                    response.message || "알 수 없는 상태"
-                  }`,
-                  true
-                );
-              }
-            } catch (jqXHR) {
-              // AJAX 에러 처리
-              let errorMsg = `결과 조회 중 오류 발생 (시도 ${
-                i + 1
-              }/${maxRetries}).`;
-              if (jqXHR.statusText === "timeout") {
-                errorMsg += " 서버 응답 시간 초과.";
-              } else if (jqXHR.responseJSON && jqXHR.responseJSON.error) {
-                errorMsg += ` 서버 메시지: ${jqXHR.responseJSON.error}`;
-              } else if (jqXHR.responseText) {
-                errorMsg += ` 서버 응답: ${jqXHR.responseText.substring(
-                  0,
-                  100
-                )}`;
-              }
-              showStatus(errorMsg, true); // 로더 유지하며 다음 시도
-            }
 
-            if (i < maxRetries - 1) {
-              await new Promise((resolve) => setTimeout(resolve, interval));
-            }
-          }
-          hideStatus();
-          showResult(
-            `분석 결과를 가져오는데 실패했습니다. (시도 횟수 초과: ${maxRetries}회)`,
-            false
-          );
+                pollAttempt++;
+
+                var xhr = new XMLHttpRequest();
+                xhr.open("GET", pollUrl, true);
+                xhr.timeout = 10000; // 10초 타임아웃
+                xhr.withCredentials = true;
+
+                xhr.onload = function () {
+                  if (xhr.status >= 200 && xhr.status < 300) {
+                    try {
+                      var response = JSON.parse(xhr.responseText);
+                      self.logDebug(
+                        "폴링 응답 받음 " +
+                          pollAttempt +
+                          "번째: " +
+                          JSON.stringify(response).substring(0, 100)
+                      );
+
+                      if (response.success && response.status === "COMPLETED") {
+                        self.hideStatus();
+                        var result = response.result;
+                        var resultMessage =
+                          "분석 완료!\n파일명: " +
+                          (result.fileNameOrigin || "N/A") +
+                          "\n";
+
+                        if (result.ansFilter === "noise") {
+                          resultMessage +=
+                            "결과: 주변 소음이 감지되었습니다. 다른 파일을 시도해 보세요.";
+                        } else if (result.ansDog) {
+                          resultMessage +=
+                            "감정: " + self.getEmotionText(result.ansDog);
+                        } else {
+                          resultMessage += "결과: 감정을 특정할 수 없습니다.";
+                        }
+
+                        self.showResult(resultMessage, true);
+                        resolve(response);
+                        return;
+                      } else if (
+                        response.success &&
+                        response.status === "PROCESSING"
+                      ) {
+                        self.showStatus(
+                          "분석 진행 중... (" +
+                            pollAttempt +
+                            "/" +
+                            maxRetries +
+                            ") 다음 확인까지 " +
+                            interval / 1000 +
+                            "초",
+                          true
+                        );
+                        setTimeout(poll, interval);
+                      } else if (
+                        response.success &&
+                        response.status === "NO_CONTENT"
+                      ) {
+                        self.hideStatus();
+                        self.showResult(
+                          "분석 결과를 찾을 수 없습니다. (Job ID: " +
+                            jobId +
+                            ")",
+                          false
+                        );
+                        resolve(response);
+                        return;
+                      } else {
+                        self.showStatus(
+                          "결과 확인 중 응답 오류 (" +
+                            pollAttempt +
+                            "/" +
+                            maxRetries +
+                            "): " +
+                            (response.message || "알 수 없는 상태"),
+                          true
+                        );
+                        setTimeout(poll, interval);
+                      }
+                    } catch (parseError) {
+                      self.showStatus(
+                        "응답 파싱 오류 (" +
+                          pollAttempt +
+                          "/" +
+                          maxRetries +
+                          "): " +
+                          parseError.message,
+                        true
+                      );
+                      setTimeout(poll, interval);
+                    }
+                  } else {
+                    self.showStatus(
+                      "HTTP 오류 (" +
+                        pollAttempt +
+                        "/" +
+                        maxRetries +
+                        "): " +
+                        xhr.status,
+                      true
+                    );
+                    setTimeout(poll, interval);
+                  }
+                };
+
+                xhr.onerror = function () {
+                  self.showStatus(
+                    "네트워크 오류 발생 (" +
+                      pollAttempt +
+                      "/" +
+                      maxRetries +
+                      ")",
+                    true
+                  );
+                  setTimeout(poll, interval);
+                };
+
+                xhr.ontimeout = function () {
+                  self.showStatus(
+                    "요청 시간 초과 (" + pollAttempt + "/" + maxRetries + ")",
+                    true
+                  );
+                  setTimeout(poll, interval);
+                };
+
+                xhr.send();
+              }
+
+              // 첫 번째 폴링 시작
+              poll();
+            });
+          },
+        };
+
+        // 페이지 로드 완료 시 초기화
+        if (document.readyState === "complete") {
+          _dogAnalyzer.init();
+        } else {
+          window.addEventListener("load", function () {
+            _dogAnalyzer.init();
+          });
         }
-      });
+      })();
     </script>
   </body>
 </html>

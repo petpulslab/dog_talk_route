@@ -4,6 +4,9 @@ import { EmotionAPI } from "@/constants/api"; // API 키 및 엔드포인트 URL
 
 // POST: 파일 업로드 및 분석 요청
 export async function POST(request: Request) {
+  // CORS 헤더 설정을 위한 원본 가져오기
+  const origin = request.headers.get("origin") || "*";
+
   try {
     const formData = await request.formData();
     const file = formData.get("audio_file") as File;
@@ -85,13 +88,21 @@ export async function POST(request: Request) {
     // 실제 프로덕션에서는 더 강력한 고유 ID 생성 방식 또는 외부 API 응답의 ID를 사용해야 합니다.
     const jobId = `${userToken}_${file.name}_${Date.now()}`;
 
-    return NextResponse.json({
-      success: true,
-      message: "Audio analysis requested. Poll for results using the jobId.",
-      jobId: jobId, // 이 jobId를 클라이언트가 결과 조회 시 사용
-      // 만약 외부 API가 응답으로 file_id 같은 것을 준다면 그것을 jobId로 사용하는 것이 더 좋습니다.
-      // 예를 들어, uploadResultData?.data?.file_id
-    });
+    return NextResponse.json(
+      {
+        success: true,
+        message: "Audio analysis requested. Poll for results using the jobId.",
+        jobId: jobId, // 이 jobId를 클라이언트가 결과 조회 시 사용
+        // 만약 외부 API가 응답으로 file_id 같은 것을 준다면 그것을 jobId로 사용하는 것이 더 좋습니다.
+        // 예를 들어, uploadResultData?.data?.file_id
+      },
+      {
+        headers: {
+          "Access-Control-Allow-Origin": origin,
+          "Access-Control-Allow-Credentials": "true",
+        },
+      }
+    );
   } catch (error) {
     console.error("[Audio Analysis API - POST] Error:", error);
     return NextResponse.json(
@@ -99,13 +110,22 @@ export async function POST(request: Request) {
         error: "Internal server error during analysis request.",
         details: error instanceof Error ? error.message : "Unknown error",
       },
-      { status: 500 }
+      {
+        status: 500,
+        headers: {
+          "Access-Control-Allow-Origin": origin,
+          "Access-Control-Allow-Credentials": "true",
+        },
+      }
     );
   }
 }
 
 // GET: 분석 결과 조회
 export async function GET(request: Request) {
+  // CORS 헤더 설정을 위한 원본 가져오기
+  const origin = request.headers.get("origin") || "*";
+
   try {
     const url = new URL(request.url);
     // 클라이언트가 jobId와 userToken을 쿼리 파라미터로 제공해야 함
@@ -115,13 +135,25 @@ export async function GET(request: Request) {
     if (!jobId) {
       return NextResponse.json(
         { error: "jobId query parameter is required" },
-        { status: 400 }
+        {
+          status: 400,
+          headers: {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+          },
+        }
       );
     }
     if (!userToken) {
       return NextResponse.json(
         { error: "userToken query parameter is required" },
-        { status: 400 }
+        {
+          status: 400,
+          headers: {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+          },
+        }
       );
     }
 
@@ -161,12 +193,21 @@ export async function GET(request: Request) {
       // 클라이언트가 폴링을 계속해야 하는지, 아니면 에러로 중단해야 하는지 알려줄 수 있는 상태 반환
       if (resultResponse.status === 404) {
         // 혹은 Pippo API의 "결과 없음" 코드 확인
-        return NextResponse.json({
-          success: true, // 요청 자체는 성공했으나
-          status: "PROCESSING", // 아직 처리 중임을 명시
-          message: "Analysis result is not_ready_yet. Please try again later.",
-          jobId: jobId,
-        });
+        return NextResponse.json(
+          {
+            success: true, // 요청 자체는 성공했으나
+            status: "PROCESSING", // 아직 처리 중임을 명시
+            message:
+              "Analysis result is not_ready_yet. Please try again later.",
+            jobId: jobId,
+          },
+          {
+            headers: {
+              "Access-Control-Allow-Origin": origin,
+              "Access-Control-Allow-Credentials": "true",
+            },
+          }
+        );
       }
       // 그 외의 에러는 실패로 간주
       return NextResponse.json(
@@ -175,7 +216,13 @@ export async function GET(request: Request) {
           details: errorText,
           jobId: jobId,
         },
-        { status: resultResponse.status }
+        {
+          status: resultResponse.status,
+          headers: {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+          },
+        }
       );
     }
 
@@ -205,36 +252,60 @@ export async function GET(request: Request) {
         endTime: latestResult.endTime || "",
       };
 
-      return NextResponse.json({
-        success: true,
-        status: "COMPLETED",
-        result: filteredResponse,
-        jobId: jobId,
-      });
+      return NextResponse.json(
+        {
+          success: true,
+          status: "COMPLETED",
+          result: filteredResponse,
+          jobId: jobId,
+        },
+        {
+          headers: {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+          },
+        }
+      );
     } else if (data && data.code === "S0005") {
       // Pippo API의 "분석 결과 없음" 코드
       console.log(
         `[Audio Analysis API - GET] Analysis pending (S0005) for jobId ${jobId}, userToken ${userToken}. Client should retry.`
       );
-      return NextResponse.json({
-        success: true,
-        status: "PROCESSING",
-        message:
-          "Analysis is still in progress (S0005). Please try again later.",
-        jobId: jobId,
-      });
+      return NextResponse.json(
+        {
+          success: true,
+          status: "PROCESSING",
+          message:
+            "Analysis is still in progress (S0005). Please try again later.",
+          jobId: jobId,
+        },
+        {
+          headers: {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+          },
+        }
+      );
     } else {
       console.log(
         `[Audio Analysis API - GET] No content or unexpected data structure for jobId ${jobId}:`,
         data
       );
-      return NextResponse.json({
-        success: true, // 요청은 성공했으나
-        status: "NO_CONTENT", // 유효한 컨텐츠가 없음
-        message: "Analysis result not found or in an unexpected format.",
-        jobId: jobId,
-        rawData: data, // 디버깅을 위해 원본 데이터 포함 가능
-      });
+      return NextResponse.json(
+        {
+          success: true, // 요청은 성공했으나
+          status: "NO_CONTENT", // 유효한 컨텐츠가 없음
+          message: "Analysis result not found or in an unexpected format.",
+          jobId: jobId,
+          rawData: data, // 디버깅을 위해 원본 데이터 포함 가능
+        },
+        {
+          headers: {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+          },
+        }
+      );
     }
   } catch (error) {
     console.error(
@@ -246,19 +317,30 @@ export async function GET(request: Request) {
         error: "Internal server error while fetching result.",
         details: error instanceof Error ? error.message : "Unknown error",
       },
-      { status: 500 }
+      {
+        status: 500,
+        headers: {
+          "Access-Control-Allow-Origin": origin,
+          "Access-Control-Allow-Credentials": "true",
+        },
+      }
     );
   }
 }
 
 // CORS 설정을 위한 OPTIONS 핸들러
-export async function OPTIONS() {
+export async function OPTIONS(request: Request) {
+  // 요청 출처 확인
+  const origin = request.headers.get("origin") || "*";
+
   return new NextResponse(null, {
     status: 204, // No Content
     headers: {
-      "Access-Control-Allow-Origin": "*", // 실제 운영에서는 허용할 도메인으로 제한
+      "Access-Control-Allow-Origin": origin, // 요청을 보낸 출처 허용
       "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, X-User-Token", // 필요한 헤더 명시
+      "Access-Control-Allow-Headers":
+        "Content-Type, X-User-Token, EMO-Client-ID, EMO-Secret-Key", // 필요한 헤더 모두 추가
+      "Access-Control-Allow-Credentials": "true", // 자격 증명 허용
     },
   });
 }
