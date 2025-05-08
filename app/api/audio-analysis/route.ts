@@ -2,6 +2,11 @@ export const runtime = "edge";
 import { NextResponse } from "next/server";
 import { EmotionAPI } from "@/constants/api"; // API 키 및 엔드포인트 URL이 정의된 파일
 
+// 서버 설정
+export const fetchCache = "force-no-store"; // 캐시 비활성화
+export const revalidate = 0; // 항상 재검증
+export const dynamic = "force-dynamic"; // 동적 렌더링 강제
+
 // POST: 파일 업로드 및 분석 요청
 export async function POST(request: Request) {
   // CORS 헤더 설정을 위한 원본 가져오기
@@ -132,6 +137,14 @@ export async function GET(request: Request) {
     const jobId = url.searchParams.get("jobId");
     const userToken = url.searchParams.get("userToken"); // 결과 조회 API에 필요
 
+    // 요청 정보 로깅 (디버깅용)
+    console.log("[Audio Analysis API - GET] Received request:", {
+      jobId,
+      userToken,
+      timestamp: new Date().toISOString(),
+      origin,
+    });
+
     if (!jobId) {
       return NextResponse.json(
         { error: "jobId query parameter is required" },
@@ -140,6 +153,7 @@ export async function GET(request: Request) {
           headers: {
             "Access-Control-Allow-Origin": origin,
             "Access-Control-Allow-Credentials": "true",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
           },
         }
       );
@@ -152,6 +166,7 @@ export async function GET(request: Request) {
           headers: {
             "Access-Control-Allow-Origin": origin,
             "Access-Control-Allow-Credentials": "true",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
           },
         }
       );
@@ -162,43 +177,109 @@ export async function GET(request: Request) {
     );
 
     // 외부 감정 분석 결과 API 호출
-    const resultResponse = await fetch(EmotionAPI.directResultEmo2, {
-      // 결과 조회 API URL
-      method: "GET", // 보통 결과 조회는 GET
-      headers: {
-        "EMO-Client-ID": EmotionAPI.clientId,
-        "EMO-Secret-Key": EmotionAPI.secretKey,
-        Referer: "http://49.247.42.95", // Pippo API가 요구하는 Referer
-        "X-User-Token": userToken,
-        "Cache-Control": "no-cache, no-store, must-revalidate",
-        Pragma: "no-cache",
-        Expires: "0",
-      },
-      cache: "no-store",
-    });
+    // 타임아웃 30초로 설정
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30초 타임아웃
 
-    console.log("[Audio Analysis API - GET] Result API Response Status:", {
-      status: resultResponse.status,
-      statusText: resultResponse.statusText,
-    });
+    try {
+      const resultResponse = await fetch(EmotionAPI.directResultEmo2, {
+        // 결과 조회 API URL
+        method: "GET", // 보통 결과 조회는 GET
+        headers: {
+          "EMO-Client-ID": EmotionAPI.clientId,
+          "EMO-Secret-Key": EmotionAPI.secretKey,
+          Referer: "http://49.247.42.95", // Pippo API가 요구하는 Referer
+          "X-User-Token": userToken,
+          "Cache-Control": "no-cache, no-store, must-revalidate",
+          Pragma: "no-cache",
+          Expires: "0",
+        },
+        cache: "no-store",
+        signal: controller.signal, // 타임아웃을 위한 abort signal
+      });
 
-    if (!resultResponse.ok) {
-      // 결과가 아직 준비되지 않았거나 (예: 404 Not Found 또는 특정 에러 코드),
-      // 실제 에러인 경우를 구분해야 할 수 있습니다.
-      // Pippo API 문서에 따르면 S0005 코드가 "분석 결과 없음"을 의미할 수 있습니다.
-      const errorText = await resultResponse.text();
-      console.warn(
-        `[Audio Analysis API - GET] Result API error for jobId ${jobId}: ${resultResponse.status} - ${errorText}`
-      );
-      // 클라이언트가 폴링을 계속해야 하는지, 아니면 에러로 중단해야 하는지 알려줄 수 있는 상태 반환
-      if (resultResponse.status === 404) {
-        // 혹은 Pippo API의 "결과 없음" 코드 확인
+      clearTimeout(timeoutId); // 타임아웃 제거
+
+      console.log("[Audio Analysis API - GET] Result API Response Status:", {
+        status: resultResponse.status,
+        statusText: resultResponse.statusText,
+      });
+
+      if (!resultResponse.ok) {
+        // 결과가 아직 준비되지 않았거나 (예: 404 Not Found 또는 특정 에러 코드),
+        // 실제 에러인 경우를 구분해야 할 수 있습니다.
+        // Pippo API 문서에 따르면 S0005 코드가 "분석 결과 없음"을 의미할 수 있습니다.
+        const errorText = await resultResponse.text();
+        console.warn(
+          `[Audio Analysis API - GET] Result API error for jobId ${jobId}: ${resultResponse.status} - ${errorText}`
+        );
+        // 클라이언트가 폴링을 계속해야 하는지, 아니면 에러로 중단해야 하는지 알려줄 수 있는 상태 반환
+        if (resultResponse.status === 404) {
+          // 혹은 Pippo API의 "결과 없음" 코드 확인
+          return NextResponse.json(
+            {
+              success: true, // 요청 자체는 성공했으나
+              status: "PROCESSING", // 아직 처리 중임을 명시
+              message:
+                "Analysis result is not_ready_yet. Please try again later.",
+              jobId: jobId,
+            },
+            {
+              headers: {
+                "Access-Control-Allow-Origin": origin,
+                "Access-Control-Allow-Credentials": "true",
+              },
+            }
+          );
+        }
+        // 그 외의 에러는 실패로 간주
         return NextResponse.json(
           {
-            success: true, // 요청 자체는 성공했으나
-            status: "PROCESSING", // 아직 처리 중임을 명시
-            message:
-              "Analysis result is not_ready_yet. Please try again later.",
+            error: "Failed to fetch analysis result",
+            details: errorText,
+            jobId: jobId,
+          },
+          {
+            status: resultResponse.status,
+            headers: {
+              "Access-Control-Allow-Origin": origin,
+              "Access-Control-Allow-Credentials": "true",
+            },
+          }
+        );
+      }
+
+      const data = await resultResponse.json();
+      console.log(
+        `[Audio Analysis API - GET] Result API Success Response for jobId ${jobId}:`,
+        JSON.stringify(data, null, 2)
+      );
+
+      // Pippo API 응답에서 실제 결과 데이터 경로 확인 필요 (예: data.data.content[0])
+      if (
+        data &&
+        data.data &&
+        data.data.content &&
+        data.data.content.length > 0
+      ) {
+        const latestResult = data.data.content[0];
+        // jobId와 요청된 jobId(또는 파일명)가 일치하는지 확인하는 로직 추가 가능
+        // 예를 들어, latestResult.fileNameOrigin과 jobId에 포함된 파일명을 비교
+        // 여기서는 최신 결과를 그냥 반환합니다.
+
+        const filteredResponse = {
+          ansDog: latestResult.ansDog || "",
+          ansFilter: latestResult.ansFilter || "",
+          fileNameOrigin: latestResult.fileNameOrigin || "",
+          startTime: latestResult.startTime || "",
+          endTime: latestResult.endTime || "",
+        };
+
+        return NextResponse.json(
+          {
+            success: true,
+            status: "COMPLETED",
+            result: filteredResponse,
             jobId: jobId,
           },
           {
@@ -208,101 +289,91 @@ export async function GET(request: Request) {
             },
           }
         );
+      } else if (data && data.code === "S0005") {
+        // Pippo API의 "분석 결과 없음" 코드
+        console.log(
+          `[Audio Analysis API - GET] Analysis pending (S0005) for jobId ${jobId}, userToken ${userToken}. Client should retry.`
+        );
+        return NextResponse.json(
+          {
+            success: true,
+            status: "PROCESSING",
+            message:
+              "Analysis is still in progress (S0005). Please try again later.",
+            jobId: jobId,
+          },
+          {
+            headers: {
+              "Access-Control-Allow-Origin": origin,
+              "Access-Control-Allow-Credentials": "true",
+            },
+          }
+        );
+      } else {
+        console.log(
+          `[Audio Analysis API - GET] No content or unexpected data structure for jobId ${jobId}:`,
+          data
+        );
+        return NextResponse.json(
+          {
+            success: true, // 요청은 성공했으나
+            status: "NO_CONTENT", // 유효한 컨텐츠가 없음
+            message: "Analysis result not found or in an unexpected format.",
+            jobId: jobId,
+            rawData: data, // 디버깅을 위해 원본 데이터 포함 가능
+          },
+          {
+            headers: {
+              "Access-Control-Allow-Origin": origin,
+              "Access-Control-Allow-Credentials": "true",
+            },
+          }
+        );
       }
-      // 그 외의 에러는 실패로 간주
-      return NextResponse.json(
-        {
-          error: "Failed to fetch analysis result",
-          details: errorText,
-          jobId: jobId,
-        },
-        {
-          status: resultResponse.status,
-          headers: {
-            "Access-Control-Allow-Origin": origin,
-            "Access-Control-Allow-Credentials": "true",
+    } catch (fetchError: unknown) {
+      clearTimeout(timeoutId); // 타임아웃 제거
+      console.error(
+        `[Audio Analysis API - GET] Fetch error for jobId ${jobId}:`,
+        fetchError
+      );
+
+      // AbortError인 경우 타임아웃으로 처리
+      if (fetchError instanceof Error && fetchError.name === "AbortError") {
+        return NextResponse.json(
+          {
+            success: true,
+            status: "PROCESSING",
+            message:
+              "Analysis is still in progress. External API timeout. Please try again later.",
+            jobId: jobId,
           },
-        }
-      );
-    }
+          {
+            headers: {
+              "Access-Control-Allow-Origin": origin,
+              "Access-Control-Allow-Credentials": "true",
+              "Cache-Control": "no-cache, no-store, must-revalidate",
+            },
+          }
+        );
+      }
 
-    const data = await resultResponse.json();
-    console.log(
-      `[Audio Analysis API - GET] Result API Success Response for jobId ${jobId}:`,
-      JSON.stringify(data, null, 2)
-    );
-
-    // Pippo API 응답에서 실제 결과 데이터 경로 확인 필요 (예: data.data.content[0])
-    if (
-      data &&
-      data.data &&
-      data.data.content &&
-      data.data.content.length > 0
-    ) {
-      const latestResult = data.data.content[0];
-      // jobId와 요청된 jobId(또는 파일명)가 일치하는지 확인하는 로직 추가 가능
-      // 예를 들어, latestResult.fileNameOrigin과 jobId에 포함된 파일명을 비교
-      // 여기서는 최신 결과를 그냥 반환합니다.
-
-      const filteredResponse = {
-        ansDog: latestResult.ansDog || "",
-        ansFilter: latestResult.ansFilter || "",
-        fileNameOrigin: latestResult.fileNameOrigin || "",
-        startTime: latestResult.startTime || "",
-        endTime: latestResult.endTime || "",
-      };
-
+      // 그 외 네트워크 에러
       return NextResponse.json(
         {
-          success: true,
-          status: "COMPLETED",
-          result: filteredResponse,
+          success: false,
+          error: "Network error while fetching result",
+          details:
+            fetchError instanceof Error
+              ? fetchError.message
+              : String(fetchError),
           jobId: jobId,
         },
         {
+          status: 500,
           headers: {
             "Access-Control-Allow-Origin": origin,
             "Access-Control-Allow-Credentials": "true",
-          },
-        }
-      );
-    } else if (data && data.code === "S0005") {
-      // Pippo API의 "분석 결과 없음" 코드
-      console.log(
-        `[Audio Analysis API - GET] Analysis pending (S0005) for jobId ${jobId}, userToken ${userToken}. Client should retry.`
-      );
-      return NextResponse.json(
-        {
-          success: true,
-          status: "PROCESSING",
-          message:
-            "Analysis is still in progress (S0005). Please try again later.",
-          jobId: jobId,
-        },
-        {
-          headers: {
-            "Access-Control-Allow-Origin": origin,
-            "Access-Control-Allow-Credentials": "true",
-          },
-        }
-      );
-    } else {
-      console.log(
-        `[Audio Analysis API - GET] No content or unexpected data structure for jobId ${jobId}:`,
-        data
-      );
-      return NextResponse.json(
-        {
-          success: true, // 요청은 성공했으나
-          status: "NO_CONTENT", // 유효한 컨텐츠가 없음
-          message: "Analysis result not found or in an unexpected format.",
-          jobId: jobId,
-          rawData: data, // 디버깅을 위해 원본 데이터 포함 가능
-        },
-        {
-          headers: {
-            "Access-Control-Allow-Origin": origin,
-            "Access-Control-Allow-Credentials": "true",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
           },
         }
       );
@@ -311,19 +382,6 @@ export async function GET(request: Request) {
     console.error(
       `[Audio Analysis API - GET] Error for jobId (from query):`,
       error
-    );
-    return NextResponse.json(
-      {
-        error: "Internal server error while fetching result.",
-        details: error instanceof Error ? error.message : "Unknown error",
-      },
-      {
-        status: 500,
-        headers: {
-          "Access-Control-Allow-Origin": origin,
-          "Access-Control-Allow-Credentials": "true",
-        },
-      }
     );
   }
 }
